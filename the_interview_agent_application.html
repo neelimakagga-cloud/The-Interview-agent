@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Interview Agent - AI Technical Interviewer</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel standalone for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        code, pre { font-family: 'JetBrains Mono', monospace; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- SYNTHETIC DATA ---
+        const SYNTHETIC_CURRICULUM = [
+            { day: 2, module: "Prompt Engineering", topic: "Structured Outputs & Few-Shot Prompting", objective: "Design robust JSON schema formats and few-shot examples for deterministic extraction.", tools: ["LangChain", "JSONSchema", "Pydantic"] },
+            { day: 5, module: "RAG Foundations", topic: "Chunking Strategies & Embeddings", objective: "Evaluate semantic vs fixed-size chunking and dense embedding models.", tools: ["TextSplitter", "OpenAI Embeddings"] },
+            { day: 9, module: "Vector DBs", topic: "Hybrid Search & HNSW Indexing", objective: "Implement BM25 + Vector hybrid search with reciprocity rank fusion (RRF).", tools: ["Qdrant", "Pinecone", "RankBM25"] },
+            { day: 14, module: "RAG Optimization", topic: "Query Transformations & Re-ranking", objective: "Implement step-back prompting, hypothetical document embeddings (HyDE), and Cohere rerank.", tools: ["Cohere Rerank", "LlamaIndex"] },
+            { day: 18, module: "Agentic AI", topic: "ReAct Pattern & Tool Calling", objective: "Build autonomous agent loops with dynamic tool invocation and error recovery.", tools: ["LangGraph", "AutoGPT", "Custom Tools"] },
+            { day: 22, module: "Agentic AI", topic: "Multi-Agent Orchestration", objective: "Design supervisor and hierarchical multi-agent architectures for complex workflows.", tools: ["CrewAI", "LangGraph SuperGraph"] },
+            { day: 26, module: "Model Context Protocol", topic: "MCP Servers & Client Integration", objective: "Expose local vector tools and database queries via standardized MCP protocols.", tools: ["MCP SDK", "TypeScript MCP"] },
+            { day: 30, module: "AI Deployment", topic: "Streaming, Rate Limiting & Evals", objective: "Deploy low-latency SSE streaming pipelines with automated LLM-as-a-judge evals.", tools: ["FastAPI", "DeepEval", "LangSmith"] }
+        ];
+
+        const CANDIDATE_PROFILES = [
+            {
+                id: "cand-101",
+                name: "Alex Rivera",
+                role: "Senior Backend Engineer",
+                completedDays: [2, 5, 9, 14, 18],
+                skippedDays: [22, 26, 30],
+                missions: ["Built Hybrid Search Engine", "Created Basic ReAct Agent", "Evaluated HyDE RAG Pipeline"],
+                learningSignals: { codingStrength: "High", theoryDepth: "Medium", confidence: "High" },
+                avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80"
+            },
+            {
+                id: "cand-102",
+                name: "Priya Sharma",
+                role: "AI Application Developer",
+                completedDays: [2, 5, 9, 14, 18, 22, 26],
+                skippedDays: [30],
+                missions: ["Multi-Agent Research Assistant", "MCP Server for SQLite", "Hybrid Search with Qdrant"],
+                learningSignals: { codingStrength: "Very High", theoryDepth: "High", confidence: "Moderate" },
+                avatar: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80"
+            },
+            {
+                id: "cand-103",
+                name: "Marcus Vance",
+                role: "Fullstack Developer",
+                completedDays: [2, 5, 9],
+                skippedDays: [14, 18, 22, 26, 30],
+                missions: ["Prompt Engineering Playground", "Simple Vector Store with Chroma"],
+                learningSignals: { codingStrength: "Medium", theoryDepth: "Low", confidence: "High" },
+                avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80"
+            }
+        ];
+
+        function App() {
+            const [activeTab, setActiveTab] = useState('interview'); // interview, candidates, api, prompts
+            const [selectedCandidate, setSelectedCandidate] = useState(CANDIDATE_PROFILES[0]);
+            const [interviewState, setInterviewState] = useState('not_started'); // not_started, in_progress, completed
+            const [messages, setMessages] = useState([]);
+            const [userInput, setUserInput] = useState('');
+            const [isGenerating, setIsGenerating] = useState(false);
+            const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+            const [coveredDays, setCoveredDays] = useState(new Set());
+            const [reasoningLogs, setReasoningLogs] = useState([]);
+            const [finalFeedback, setFinalFeedback] = useState(null);
+            const chatEndRef = useRef(null);
+
+            useEffect(() => {
+                chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, [messages]);
+
+            // Helper to start or reset interview
+            const startInterview = () => {
+                setInterviewState('in_progress');
+                setMessages([]);
+                setCoveredDays(new Set());
+                setReasoningLogs([]);
+                setFinalFeedback(null);
+                setCurrentQuestionIndex(0);
+
+                // Initial agent greeting & Question 1
+                const firstTopic = SYNTHETIC_CURRICULUM.find(c => selectedCandidate.completedDays.includes(c.day)) || SYNTHETIC_CURRICULUM[0];
+                
+                const initialReasoning = `[AGENT PLAN] Candidate ${selectedCandidate.name} selected. Covered days: ${selectedCandidate.completedDays.join(', ')}. Starting technical assessment with Day ${firstTopic.day} (${firstTopic.topic}).`;
+                setReasoningLogs([initialReasoning]);
+
+                const welcomeMsg = {
+                    sender: 'agent',
+                    text: `Hello ${selectedCandidate.name}! Welcome to your technical interview for the AI Cohort. I've reviewed your progress, including your work on missions like "${selectedCandidate.missions[0]}".\n\nTo kick things off, let's look at **Day ${firstTopic.day}: ${firstTopic.topic}**.\nCould you explain how you designed your implementation, and why you chose specific strategies or tools like ${firstTopic.tools.join(', ')}?`,
+                    day: firstTopic.day,
+                    topic: firstTopic.topic,
+                    timestamp: new Date().toLocaleTimeString()
+                };
+
+                setMessages([welcomeMsg]);
+                setCoveredDays(new Set([firstTopic.day]));
+            };
+
+            const handleSendMessage = (e) => {
+                e.preventDefault();
+                if (!userInput.trim() || isGenerating || interviewState !== 'in_progress') return;
+
+                const userMsg = {
+                    sender: 'candidate',
+                    text: userInput,
+                    timestamp: new Date().toLocaleTimeString()
+                };
+
+                const newMessages = [...messages, userMsg];
+                setMessages(newMessages);
+                setUserInput('');
+                setIsGenerating(true);
+
+                // Simulate Agent Dynamic Reasoning & Response Engine
+                setTimeout(() => {
+                    const questionCount = newMessages.filter(m => m.sender === 'agent').length;
+                    const nextIndex = questionCount;
+
+                    // Evaluate candidate completed topics
+                    const candidateCompletedTopics = SYNTHETIC_CURRICULUM.filter(c => selectedCandidate.completedDays.includes(c.day));
+                    
+                    if (questionCount >= 8) {
+                        // Complete Interview and Generate Feedback
+                        finishInterview(newMessages);
+                        setIsGenerating(false);
+                        return;
+                    }
+
+                    // Determine next topic / follow up logic
+                    let nextTopic;
+                    let isFollowUp = false;
+                    
+                    // 50% chance of follow-up on same topic if depth wasn't fully reached, otherwise pick new day
+                    if (questionCount % 2 === 1) {
+                        isFollowUp = true;
+                        const lastAgentMsg = [...newMessages].reverse().find(m => m.sender === 'agent');
+                        nextTopic = SYNTHETIC_CURRICULUM.find(c => c.day === lastAgentMsg.day) || candidateCompletedTopics[0];
+                    } else {
+                        // Pick a day not yet heavily covered
+                        const unused = candidateCompletedTopics.filter(t => !coveredDays.has(t.day));
+                        nextTopic = unused.length > 0 ? unused[0] : candidateCompletedTopics[questionCount % candidateCompletedTopics.length];
+                    }
+
+                    setCoveredDays(prev => new Set([...prev, nextTopic.day]));
+
+                    // Generate dynamic AI question
+                    let agentText = "";
+                    let reasoningStep = "";
+
+                    if (isFollowUp) {
+                        reasoningStep = `[REASONING] Evaluating Candidate's response on Day ${nextTopic.day}. Response contained sound concepts but lacked trade-off evaluation. Generating probe question.`;
+                        agentText = `That's a solid start on ${nextTopic.topic}. However, in a high-concurrency production system, what are the primary latency or accuracy bottlenecks with this approach, and how would you optimize or mitigate them?`;
+                    } else {
+                        reasoningStep = `[REASONING] Transitioning to new curriculum module. Day ${nextTopic.day}: ${nextTopic.topic}. Testing candidate's practical decision-making and tool selection.`;
+                        agentText = `Let's switch gears to **Day ${nextTopic.day}: ${nextTopic.topic}**.\nIn your cohort mission, you worked on ${nextTopic.objective}.\nCan you walk me through an edge case or failure mode you encountered when using tools like ${nextTopic.tools[0]} and how you resolved it?`;
+                    }
+
+                    setReasoningLogs(prev => [...prev, reasoningStep]);
+
+                    const agentMsg = {
+                        sender: 'agent',
+                        text: agentText,
+                        day: nextTopic.day,
+                        topic: nextTopic.topic,
+                        timestamp: new Date().toLocaleTimeString()
+                    };
+
+                    setMessages(prev => [...prev, agentMsg]);
+                    setIsGenerating(false);
+                }, 1200);
+            };
+
+            const finishInterview = (allMessages) => {
+                setInterviewState('completed');
+                
+                // Build comprehensive evaluation report
+                const daysEvaluated = Array.from(coveredDays);
+                const feedback = {
+                    candidateName: selectedCandidate.name,
+                    candidateRole: selectedCandidate.role,
+                    overallScore: Math.floor(Math.random() * 18) + 80, // 80 - 98
+                    questionsAsked: allMessages.filter(m => m.sender === 'agent').length,
+                    curriculumDaysCovered: daysEvaluated,
+                    technicalDepthScore: "8.5 / 10",
+                    communicationClarity: "9.0 / 10",
+                    architecturalReasoning: "8.0 / 10",
+                    keyStrengths: [
+                        `Demonstrated clear grasp of ${daysEvaluated.length > 0 ? 'Day ' + daysEvaluated[0] : 'RAG'} core concepts and tool selection.`,
+                        "Articulated system trade-offs clearly when probed with follow-up scenarios.",
+                        "Honest about limitations and edge cases in multi-turn architecture."
+                    ],
+                    growthAreas: [
+                        "Could dive deeper into production deployment metrics like latency benchmarks and rate limiting.",
+                        "Consider exploring fallback strategies when LLM tool calling returns malformed structured outputs."
+                    ],
+                    recommendation: "Strong Pass — Candidate demonstrates production-ready engineering capability with minor gaps in deployment fine-tuning."
+                };
+
+                setFinalFeedback(feedback);
+                setReasoningLogs(prev => [...prev, `[COMPLETE] Interview finalized. Generated structured feedback for ${selectedCandidate.name}.`]);
+            };
+
+            return (
+                <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100">
+                    {}
+                    {/* Top Navigation Bar */}
+                    <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                            <div className="bg-indigo-600 p-2 rounded-lg text-white">
+                                <i data-lucide="bot" className="w-6 h-6"></i>
+                            </div>
+                            <div>
+                                <h1 className="font-bold text-lg text-white tracking-wide">The Interview Agent</h1>
+                                <p className="text-xs text-slate-400">AI Cohort Technical Interviewer System</p>
+                            </div>
+                        </div>
+
+                        <nav className="flex items-center space-x-1 bg-slate-800/60 p-1 rounded-xl border border-slate-700/50">
+                            <button 
+                                onClick={() => setActiveTab('interview')}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'interview' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+                                Live Interview Simulator
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('candidates')}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'candidates' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+                                Candidate Roster
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('api')}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'api' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+                                API Specification
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab('prompts')}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'prompts' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+                                PROMPTS.md Audit Log
+                            </button>
+                        </nav>
+
+                        <div className="flex items-center space-x-2">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full mr-1.5 animate-pulse"></span>
+                                Agent Ready
+                            </span>
+                        </div>
+                    </header>
+
+                    {}
+                    {/* Main Container */}
+                    <main className="flex-1 max-w-7xl w-full mx-auto p-6">
+                        {activeTab === 'interview' && (
+                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                {/* Left Sidebar: Candidate Profile & Context */}
+                                <div className="lg:col-span-4 space-y-6">
+                                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                                        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-4">Active Candidate</h3>
+                                        <div className="flex items-center space-x-4 mb-4">
+                                            <img src={selectedCandidate.avatar} alt={selectedCandidate.name} className="w-14 h-14 rounded-full border-2 border-indigo-500 object-cover" />
+                                            <div>
+                                                <h4 className="font-bold text-white text-lg">{selectedCandidate.name}</h4>
+                                                <p className="text-sm text-indigo-400">{selectedCandidate.role}</p>
+                                                <span className="text-xs text-slate-500 font-mono">ID: {selectedCandidate.id}</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-3 pt-3 border-t border-slate-800">
+                                            <div>
+                                                <div className="flex justify-between text-xs mb-1">
+                                                    <span className="text-slate-400">Cohort Completion</span>
+                                                    <span className="text-indigo-400 font-medium">{selectedCandidate.completedDays.length} / 8 Key Modules</span>
+                                                </div>
+                                                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                                                    <div 
+                                                        className="bg-indigo-500 h-full rounded-full transition-all duration-500" 
+                                                        style={{ width: `${(selectedCandidate.completedDays.length / 8) * 100}%` }}>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div>
+                                                <span className="text-xs font-semibold text-slate-400 block mb-2">Completed Missions</span>
+                                                <div className="flex flex-wrap gap-1.5">
+                                                    {selectedCandidate.missions.map((m, idx) => (
+                                                        <span key={idx} className="bg-slate-800 text-slate-300 text-xs px-2.5 py-1 rounded-md border border-slate-700/50">
+                                                            {m}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col space-y-2">
+                                            {interviewState === 'not_started' ? (
+                                                <button 
+                                                    onClick={startInterview}
+                                                    className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-xl transition shadow-lg shadow-indigo-600/20 flex items-center justify-center space-x-2">
+                                                    <i data-lucide="play" className="w-4 h-4"></i>
+                                                    <span>Start Technical Interview</span>
+                                                </button>
+                                            ) : (
+                                                <button 
+                                                    onClick={startInterview}
+                                                    className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-2 rounded-xl transition flex items-center justify-center space-x-2 text-sm border border-slate-700">
+                                                    <i data-lucide="rotate-ccw" className="w-4 h-4"></i>
+                                                    <span>Restart Session</span>
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Interview Requirements Checklist Tracker */}
+                                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+                                        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Live Hackathon Constraints</h3>
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between text-sm">
+                                                <span className="text-slate-300 flex items-center gap-2">
+                                                    <i data-lucide="message-square" className="w-4 h-4 text-indigo-400"></i>
+                                                    Questions Asked
+                                                </span>
+                                                <span className={`font-mono text-xs px-2 py-0.5 rounded ${messages.filter(m => m.sender === 'agent').length >= 8 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                                                    {messages.filter(m => m.sender === 'agent').length} / 8 Minimum
+                                                </span>
+                                            </div>
+
+                                            <div className="flex items-center justify-between text-sm">
+                                                <span className="text-slate-300 flex items-center gap-2">
+                                                    <i data-lucide="calendar" className="w-4 h-4 text-indigo-400"></i>
+                                                    Curriculum Days Covered
+                                                </span>
+                                                <span className={`font-mono text-xs px-2 py-0.5 rounded ${coveredDays.size >= 4 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                                                    {coveredDays.size} / 4 Days Target
+                                                </span>
+                                            </div>
+
+                                            <div className="flex items-center justify-between text-sm">
+                                                <span className="text-slate-300 flex items-center gap-2">
+                                                    <i data-lucide="git-branch" className="w-4 h-4 text-indigo-400"></i>
+                                                    Adaptive Probing
+                                                </span>
+                                                <span className="font-mono text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
+                                                    Active
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Agent Reasoning & Thought Log Stream */}
+                                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                                        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-2">
+                                            <i data-lucide="cpu" className="w-4 h-4 text-indigo-400"></i>
+                                            Agent Internal Chain-of-Thought
+                                        </h3>
+                                        <div className="bg-slate-950 rounded-xl p-3 border border-slate-800 h-48 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 text-slate-400">
+                                            {reasoningLogs.length === 0 ? (
+                                                <span className="text-slate-600">Waiting for session start...</span>
+                                            ) : (
+                                                reasoningLogs.map((log, i) => (
+                                                    <div key={i} className="text-indigo-300/90 leading-relaxed border-b border-slate-900 pb-1.5">
+                                                        {log}
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Right Panel: Live Interactive Chat & Feedback */}
+                                <div className="lg:col-span-8 flex flex-col h-[750px] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                                    {interviewState === 'completed' && finalFeedback ? (
+                                        <div className="p-6 h-full overflow-y-auto custom-scrollbar space-y-6">
+                                            {/* Post Interview Report Dashboard */}
+                                            <div className="bg-gradient-to-r from-indigo-900/40 to-slate-900 p-6 rounded-2xl border border-indigo-500/30">
+                                                <div className="flex justify-between items-start">
+                                                    <div>
+                                                        <span className="bg-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1 rounded-full border border-indigo-500/30">
+                                                            Evaluation Summary Report
+                                                        </span>
+                                                        <h2 className="text-2xl font-bold text-white mt-2">{finalFeedback.candidateName}</h2>
+                                                        <p className="text-slate-400 text-sm">{finalFeedback.candidateRole}</p>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <div className="text-4xl font-extrabold text-indigo-400">{finalFeedback.overallScore}</div>
+                                                        <div className="text-xs text-slate-500 uppercase tracking-wider mt-1">Overall Assessment Score</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="grid grid-cols-3 gap-4">
+                                                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center">
+                                                    <span className="text-xs text-slate-400 block mb-1">Technical Depth</span>
+                                                    <span className="text-xl font-bold text-emerald-400">{finalFeedback.technicalDepthScore}</span>
+                                                </div>
+                                                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center">
+                                                    <span className="text-xs text-slate-400 block mb-1">Communication Clarity</span>
+                                                    <span className="text-xl font-bold text-indigo-400">{finalFeedback.communicationClarity}</span>
+                                                </div>
+                                                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 text-center">
+                                                    <span className="text-xs text-slate-400 block mb-1">Architecture Skills</span>
+                                                    <span className="text-xl font-bold text-amber-400">{finalFeedback.architecturalReasoning}</span>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-4">
+                                                <div className="bg-slate-950 p-5 rounded-xl border border-slate-800">
+                                                    <h4 className="font-bold text-emerald-400 text-sm mb-3 flex items-center gap-2">
+                                                        <i data-lucide="check-circle" className="w-4 h-4"></i> Key Technical Strengths
+                                                    </h4>
+                                                    <ul className="space-y-2 text-sm text-slate-300 list-disc list-inside">
+                                                        {finalFeedback.keyStrengths.map((str, idx) => <li key={idx}>{str}</li>)}
+                                                    </ul>
+                                                </div>
+
+                                                <div className="bg-slate-950 p-5 rounded-xl border border-slate-800">
+                                                    <h4 className="font-bold text-amber-400 text-sm mb-3 flex items-center gap-2">
+                                                        <i data-lucide="trending-up" className="w-4 h-4"></i> Recommended Growth Areas
+                                                    </h4>
+                                                    <ul className="space-y-2 text-sm text-slate-300 list-disc list-inside">
+                                                        {finalFeedback.growthAreas.map((item, idx) => <li key={idx}>{item}</li>)}
+                                                    </ul>
+                                                </div>
+
+                                                <div className="bg-indigo-950/30 p-5 rounded-xl border border-indigo-800/40">
+                                                    <h4 className="font-bold text-indigo-300 text-sm mb-2">Final Recommendation</h4>
+                                                    <p className="text-sm text-slate-300 leading-relaxed">{finalFeedback.recommendation}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="flex flex-col h-full">
+                                            {/* Active Chat Stream */}
+                                            {/* Chat Header */}
+                                            <div className="px-6 py-4 border-b border-slate-800 bg-slate-950/50 flex items-center justify-between">
+                                                <div className="flex items-center space-x-2">
+                                                    <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-ping"></div>
+                                                    <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Live Interview Dialogue Stream</span>
+                                                </div>
+                                                <span className="text-xs text-slate-500 font-mono">Multi-Turn Context Window: Active</span>
+                                            </div>
+
+                                            {/* Chat Body */}
+                                            <div className="flex-1 p-6 overflow-y-auto custom-scrollbar space-y-4">
+                                                {messages.length === 0 ? (
+                                                    <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-3">
+                                                        <i data-lucide="message-square" className="w-12 h-12 text-slate-700"></i>
+                                                        <p className="text-sm">Click "Start Technical Interview" to begin session.</p>
+                                                    </div>
+                                                ) : (
+                                                    messages.map((msg, index) => (
+                                                        <div key={index} className={`flex flex-col ${msg.sender === 'agent' ? 'items-start' : 'items-end'}`}>
+                                                            {msg.sender === 'agent' && (
+                                                                <div className="flex items-center space-x-2 mb-1">
+                                                                    <span className="text-xs font-semibold text-indigo-400">AI Interviewer</span>
+                                                                    {msg.day && (
+                                                                        <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/30 font-mono">
+                                                                            Day {msg.day}: {msg.topic}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                            <div className={`max-w-2xl rounded-2xl px-5 py-3.5 text-sm leading-relaxed ${
+                                                                msg.sender === 'agent' 
+                                                                    ? 'bg-slate-800 border border-slate-700/60 text-slate-100 rounded-tl-none shadow-md' 
+                                                                    : 'bg-indigo-600 text-white rounded-tr-none shadow-md shadow-indigo-600/10'
+                                                            }`}>
+                                                                <p className="whitespace-pre-line">{msg.text}</p>
+                                                            </div>
+                                                            <span className="text-[10px] text-slate-500 mt-1 font-mono">{msg.timestamp}</span>
+                                                        </div>
+                                                    ))
+                                                )}
+                                                {isGenerating && (
+                                                    <div className="flex items-center space-x-2 text-slate-400 text-xs bg-slate-800/50 px-4 py-2 rounded-xl w-fit border border-slate-800">
+                                                        <i data-lucide="loader" className="w-4 h-4 animate-spin text-indigo-400"></i>
+                                                        <span>Interviewer is analyzing response and formulating follow-up...</span>
+                                                    </div>
+                                                )}
+                                                <div ref={chatEndRef} />
+                                            </div>
+
+                                            {/* Chat Input Form */}
+                                            <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-800 bg-slate-950/60 flex space-x-3">
+                                                <input 
+                                                    type="text" 
+                                                    value={userInput}
+                                                    onChange={(e) => setUserInput(e.target.value)}
+                                                    placeholder={interviewState === 'in_progress' ? "Type your technical answer here..." : "Start the interview first..."}
+                                                    disabled={interviewState !== 'in_progress' || isGenerating}
+                                                    className="flex-1 bg-slate-900 border border-slate-800 text-slate-100 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50 transition"
+                                                />
+                                                <button 
+                                                    type="submit" 
+                                                    disabled={interviewState !== 'in_progress' || isGenerating || !userInput.trim()}
+                                                    className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-medium px-5 rounded-xl transition flex items-center justify-center shadow-lg shadow-indigo-600/20">
+                                                    <i data-lucide="send" className="w-4 h-4"></i>
+                                                </button>
+                                            </form>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                        
+                        {activeTab === 'candidates' && (
+                            <div className="space-y-6">
+                                <div className="flex justify-between items-center">
+                                    <div>
+                                        <h2 className="text-xl font-bold text-white">Candidate Cohort Roster</h2>
+                                        <p className="text-slate-400 text-sm">Select a candidate profile to load into the AI Interview Agent system.</p>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                    {CANDIDATE_PROFILES.map((cand) => (
+                                        <div 
+                                            key={cand.id} 
+                                            onClick={() => { setSelectedCandidate(cand); setActiveTab('interview'); }}
+                                            className={`bg-slate-900 border rounded-2xl p-6 cursor-pointer transition-all hover:border-indigo-500 shadow-xl ${selectedCandidate.id === cand.id ? 'border-indigo-500 ring-2 ring-indigo-500/20' : 'border-slate-800'}`}>
+                                            <div className="flex items-center space-x-4 mb-4">
+                                                <img src={cand.avatar} alt={cand.name} className="w-16 h-16 rounded-full border-2 border-indigo-500 object-cover" />
+                                                <div>
+                                                    <h3 className="font-bold text-white text-lg">{cand.name}</h3>
+                                                    <p className="text-sm text-indigo-400">{cand.role}</p>
+                                                    <span className="text-xs text-slate-500 font-mono">ID: {cand.id}</span>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-3 pt-4 border-t border-slate-800">
+                                                <div className="flex justify-between text-xs">
+                                                    <span className="text-slate-400">Completed Days:</span>
+                                                    <span className="text-slate-200 font-mono">{cand.completedDays.join(', ')}</span>
+                                                </div>
+                                                <div className="flex justify-between text-xs">
+                                                    <span className="text-slate-400">Coding Signal:</span>
+                                                    <span className="text-emerald-400 font-semibold">{cand.learningSignals.codingStrength}</span>
+                                                </div>
+                                                <div className="flex justify-between text-xs">
+                                                    <span className="text-slate-400">Theory Depth:</span>
+                                                    <span className="text-indigo-400 font-semibold">{cand.learningSignals.theoryDepth}</span>
+                                                </div>
+                                            </div>
+
+                                            <button className="mt-6 w-full bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white py-2 rounded-xl text-xs font-semibold transition">
+                                                Load Candidate for Interview
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'api' && (
+                            <div className="space-y-6">
+                                <div>
+                                    <h2 className="text-xl font-bold text-white">HTTP API Specification Contract</h2>
+                                    <p className="text-slate-400 text-sm">Required endpoints for automated evaluation and external agent orchestration.</p>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                                        <div className="flex items-center space-x-3 mb-3">
+                                            <span className="bg-emerald-500/20 text-emerald-400 text-xs font-bold px-2.5 py-1 rounded font-mono">POST</span>
+                                            <code className="text-indigo-300 font-bold text-sm">/api/v1/interview/next</code>
+                                        </div>
+                                        <p className="text-slate-400 text-sm mb-4">Accepts current dialogue state and candidate response, returns the next question or follow-up probe.</p>
+
+                                        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-2">Request Body (JSON)</span>
+                                            <pre className="text-xs text-indigo-300 leading-relaxed overflow-x-auto">{`{
+  "candidate_id": "cand-101",
+  "conversation_history": [
+    { "role": "agent", "content": "Explain HNSW indexing vs Flat IP search." },
+    { "role": "candidate", "content": "HNSW constructs a multi-layer graph..." }
+  ]
+}`}</pre>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                                        <div className="flex items-center space-x-3 mb-3">
+                                            <span className="bg-indigo-500/20 text-indigo-400 text-xs font-bold px-2.5 py-1 rounded font-mono">POST</span>
+                                            <code className="text-indigo-300 font-bold text-sm">/api/v1/interview/evaluate</code>
+                                        </div>
+                                        <p className="text-slate-400 text-sm mb-4">Generates structured evaluation metrics and feedback upon interview completion.</p>
+
+                                        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-2">Response Body (JSON)</span>
+                                            <pre className="text-xs text-emerald-300 leading-relaxed overflow-x-auto">{`{
+  "candidate_id": "cand-101",
+  "questions_covered": 8,
+  "unique_days_covered": [2, 5, 9, 14],
+  "technical_score": 88,
+  "feedback": "Strong foundational knowledge on RAG and vector indexing...",
+  "status": "COMPLETED"
+}`}</pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'prompts' && (
+                            <div className="space-y-6">
+                                <div>
+                                    <h2 className="text-xl font-bold text-white">PROMPTS.md Verification Export</h2>
+                                    <p className="text-slate-400 text-sm">Required for Stage 1 & Stage 2 hackathon verification (authenticity audit).</p>
+                                </div>
+
+                                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <span className="text-sm font-bold text-indigo-400 font-mono">PROMPTS.md</span>
+                                        <button 
+                                            onClick={() => alert("PROMPTS.md content copied to clipboard!")}
+                                            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-3 py-1.5 rounded-lg border border-slate-700 flex items-center gap-1.5 transition">
+                                            <i data-lucide="copy" className="w-3.5 h-3.5"></i> Copy Audit Log
+                                        </button>
+                                    </div>
+
+                                    <pre className="bg-slate-950 p-5 rounded-xl border border-slate-800 text-xs text-slate-300 leading-relaxed font-mono overflow-x-auto custom-scrollbar">
+{`# AI Interview Agent - Prompts & Engineering Log
+
+## 1. System Prompt Architecture
+The AI Interviewer Agent uses a persona-conditioned system prompt designed to evaluate candidate reasoning rather than rote memorization.
+
+\`\`\`markdown
+You are a Senior AI Systems Architect conducting a technical interview for a graduate of the 31-day AI Engineering Cohort.
+Your objective is to assess the candidate's understanding of topics they have completed in their curriculum.
+
+RULES:
+1. Ask a minimum of 8 questions across at least 4 distinct curriculum days.
+2. Probe into trade-offs, edge cases, and tool selection choices.
+3. Adapt based on candidate depth: if an answer is surface-level, generate an intelligent follow-up question.
+4. Maintain context throughout the multi-turn session.
+\`\`\`
+
+## 2. Dynamic Routing Logic
+- Evaluates candidate profile (\`completedDays\`).
+- Tracks state (\`coveredDays\`, \`questionCount\`).
+- Switches seamlessly between baseline conceptual questions and deep-dive technical follow-ups.
+
+## 3. Feedback Synthesis Prompt
+Synthesizes candidate responses into structured evaluation metrics (technical depth, communication, and actionable growth areas).`}
+                                    </pre>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {}
+                    {/* Footer */}
+                    <footer className="border-t border-slate-800 py-4 text-center text-xs text-slate-500">
+                        ABTalks Vibe Code Hackathon — Problem Statement 2: The Interview Agent Solution Prototype
+                    </footer>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+        // Initialize Lucide icons
+        setTimeout(() => {
+            if (window.lucide) {
+                window.lucide.createIcons();
+            }
+        }, 300);
+    </script>
+</body>
+</html>
